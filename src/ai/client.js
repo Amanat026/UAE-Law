@@ -1,0 +1,62 @@
+export async function sendChatMessage(messages, language = 'en', onChunk) {
+  const apiKey = localStorage.getItem('gemini_api_key') || import.meta.env.VITE_GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing. Please set it in Settings or environment variables.");
+  }
+
+  const systemPrompt = `You are an expert UAE Legal and Regulatory Advisor. Help users with UAE laws (ICP, MOHRE, traffic, tenancy, visa). Ground your answers in professional legal standards similar to Khaleej Times and Gulf News guidance. Always include a disclaimer. Respond in the user's selected language (${language}).`;
+
+  const formattedMessages = messages.map(m => ({
+    role: m.role === 'user' ? 'user' : 'model',
+    parts: [{ text: m.content }]
+  }));
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          { role: 'user', parts: [{ text: systemPrompt }] },
+          ...formattedMessages
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.error?.message || "Failed to connect to Gemini API");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let textBuffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      textBuffer += decoder.decode(value, { stream: true });
+      const lines = textBuffer.split('\n');
+      textBuffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const jsonStr = line.replace('data: ', '').trim();
+          if (jsonStr === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const chunkText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (chunkText && onChunk) {
+              onChunk(chunkText);
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  } catch (error) {
+    console.error("AI Client Error:", error);
+    throw error;
+  }
+}
